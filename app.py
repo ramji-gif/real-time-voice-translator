@@ -76,4 +76,12 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str):
             tts.write_to_fp(buf)
             buf.seek(0)
             await websocket.send_bytes(buf.read())
-    except WebSocketDisconnect:
+    except WebSocketDisconnect: 
+        pass
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+   
+        
+        
