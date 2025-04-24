@@ -75,7 +75,9 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str):
         pass
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 8000))  # fallback to 8000 locally
+    uvicorn.run(app, host="0.0.0.0", port=port)
+ 
 
 
    
