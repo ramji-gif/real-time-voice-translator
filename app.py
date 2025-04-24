@@ -7,6 +7,9 @@ from gtts import gTTS
 from googletrans import Translator
 import io
 import os
+from pydub import AudioSegment
+import tempfile
+
 
 app = FastAPI()
 translator = Translator()
@@ -19,6 +22,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+def root():
+    return {"message": "Voice Translator backend is running."}
 
 
 language_map = {
@@ -47,6 +53,7 @@ language_map = {
     "Bodo":           ("hi-IN", "hi", "brx"),
     "Sanskrit":       ("sa-IN", "sa", "sa")
 }
+  
 
 @app.websocket("/ws/{src}/{tgt}")
 async def translate_ws(websocket: WebSocket, src: str, tgt: str):
@@ -55,24 +62,48 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str):
     try:
         while True:
             audio_bytes = await websocket.receive_bytes()
-            audio_data = sr.AudioData(audio_bytes, sample_rate=16000, sample_width=2)
+
+            # Save WebM temp
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as webm_file:
+                webm_file.write(audio_bytes)
+                webm_path = webm_file.name
+
+            # Convert to WAV (PCM)
+            wav_path = webm_path.replace(".webm", ".wav")
+            AudioSegment.from_file(webm_path).export(wav_path, format="wav")
+
+            # Load audio into recognizer
+            with sr.AudioFile(wav_path) as source:
+                audio = recognizer.record(source)
+
             stt_locale = language_map.get(src, ("hi-IN", "hi", "hi"))[0]
             try:
-                text = recognizer.recognize_google(audio_data, language=stt_locale)
+                text = recognizer.recognize_google(audio, language=stt_locale)
             except sr.UnknownValueError:
                 await websocket.send_text("Could not understand audio")
                 continue
+
+            # Translate
             src_code = language_map.get(src, ("hi-IN", "hi", "hi"))[2]
             tgt_code = language_map.get(tgt, ("hi-IN", "hi", "hi"))[2]
             translated = translator.translate(text, src=src_code, dest=tgt_code).text
+
+            # Convert to speech
             tts_code = language_map.get(tgt, ("hi-IN", "hi", "hi"))[1]
             tts = gTTS(text=translated, lang=tts_code)
             buf = io.BytesIO()
             tts.write_to_fp(buf)
             buf.seek(0)
             await websocket.send_bytes(buf.read())
-    except WebSocketDisconnect: 
+
+            # Clean up
+            os.remove(webm_path)
+            os.remove(wav_path)
+
+    except WebSocketDisconnect:
         pass
+
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))  # fallback to 8000 locally
