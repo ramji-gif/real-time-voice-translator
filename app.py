@@ -1,7 +1,6 @@
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import speech_recognition as sr
 from gtts import gTTS
@@ -20,11 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/static", StaticFiles(directory="frontend"), name="static")
 
-@app.get("/")
-def read_index():
-    return FileResponse(os.path.join("frontend", "index.html"))
 
 language_map = {
     "Hindi":          ("hi-IN", "hi", "hi"),
