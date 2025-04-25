@@ -53,7 +53,7 @@ language_map = {
     "Bodo":           ("hi-IN", "hi", "brx"),
     "Sanskrit":       ("sa-IN", "sa", "sa")
 }
-    @app.websocket("/ws/{src}/{tgt}")
+@app.websocket("/ws/{src}/{tgt}")
 async def translate_ws(websocket: WebSocket, src: str, tgt: str):
     await websocket.accept()
     recognizer = sr.Recognizer()
