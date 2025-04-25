@@ -59,49 +59,72 @@ language_map = {
 async def translate_ws(websocket: WebSocket, src: str, tgt: str):
     await websocket.accept()
     recognizer = sr.Recognizer()
+
     try:
         while True:
             audio_bytes = await websocket.receive_bytes()
 
-            # Save WebM temp
+            # Save chunk to temp .webm
             with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as webm_file:
                 webm_file.write(audio_bytes)
                 webm_path = webm_file.name
 
-            # Convert to WAV (PCM)
+            # Convert .webm to .wav
             wav_path = webm_path.replace(".webm", ".wav")
-            AudioSegment.from_file(webm_path).export(wav_path, format="wav")
+            try:
+                AudioSegment.from_file(webm_path).export(wav_path, format="wav")
+            except Exception as e:
+                await websocket.send_text(f"Audio conversion failed: {str(e)}")
+                os.remove(webm_path)
+                continue
 
-            # Load audio into recognizer
+            # Recognize speech from wav
             with sr.AudioFile(wav_path) as source:
-                audio = recognizer.record(source)
+                audio_data = recognizer.record(source)
 
             stt_locale = language_map.get(src, ("hi-IN", "hi", "hi"))[0]
             try:
-                text = recognizer.recognize_google(audio, language=stt_locale)
+                text = recognizer.recognize_google(audio_data, language=stt_locale)
             except sr.UnknownValueError:
                 await websocket.send_text("Could not understand audio")
+                os.remove(webm_path)
+                os.remove(wav_path)
+                continue
+            except sr.RequestError as e:
+                await websocket.send_text(f"Speech recognition failed: {e}")
+                os.remove(webm_path)
+                os.remove(wav_path)
                 continue
 
-            # Translate
+            # Translate text
             src_code = language_map.get(src, ("hi-IN", "hi", "hi"))[2]
             tgt_code = language_map.get(tgt, ("hi-IN", "hi", "hi"))[2]
-            translated = translator.translate(text, src=src_code, dest=tgt_code).text
+            try:
+                translated = translator.translate(text, src=src_code, dest=tgt_code).text
+            except Exception as e:
+                await websocket.send_text(f"Translation failed: {str(e)}")
+                os.remove(webm_path)
+                os.remove(wav_path)
+                continue
 
             # Convert to speech
             tts_code = language_map.get(tgt, ("hi-IN", "hi", "hi"))[1]
-            tts = gTTS(text=translated, lang=tts_code)
-            buf = io.BytesIO()
-            tts.write_to_fp(buf)
-            buf.seek(0)
-            await websocket.send_bytes(buf.read())
+            try:
+                tts = gTTS(text=translated, lang=tts_code)
+                buf = io.BytesIO()
+                tts.write_to_fp(buf)
+                buf.seek(0)
+                await websocket.send_bytes(buf.read())
+            except Exception as e:
+                await websocket.send_text(f"TTS failed: {str(e)}")
 
             # Clean up
             os.remove(webm_path)
             os.remove(wav_path)
 
     except WebSocketDisconnect:
-        pass
+        print("WebSocket disconnected.")
+
 
 
 
