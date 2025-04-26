@@ -130,3 +130,8 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str):
 
     except WebSocketDisconnect:
         print("Client disconnected")
+
+    if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
+
