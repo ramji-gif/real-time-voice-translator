@@ -51,7 +51,6 @@ language_map = {
     "Bodo": ("hi-IN", "hi-IN", "brx"),
     "Sanskrit": ("hi-IN", "hi-IN", "sa")
 }
-
 @app.websocket("/ws/{src}/{tgt}")
 async def translate_ws(websocket: WebSocket, src: str, tgt: str):
     await websocket.accept()
@@ -64,6 +63,8 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str):
     src_locale, src_tts_lang, src_code = language_map.get(src, ("hi-IN", "hi-IN", "hi"))
     _, tgt_tts_lang, tgt_code = language_map.get(tgt, ("hi-IN", "hi-IN", "hi"))
 
+    print(f"WebSocket opened for: {src} → {tgt}")
+
     try:
         while True:
             audio_chunk = await websocket.receive_bytes()
@@ -74,12 +75,16 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str):
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as webm_file:
                     webm_file.write(buffer)
                     webm_path = webm_file.name
+                print(f"[Audio] Received and saved to {webm_path}")
 
                 wav_path = webm_path.replace(".webm", ".wav")
                 try:
                     AudioSegment.from_file(webm_path).export(wav_path, format="wav")
+                    print(f"[Audio] Converted to WAV: {wav_path}")
                 except Exception as e:
-                    await websocket.send_text(f"Audio conversion failed: {str(e)}")
+                    msg = f"Audio conversion failed: {str(e)}"
+                    print("[Error]", msg)
+                    await websocket.send_text(msg)
                     os.remove(webm_path)
                     buffer.clear()
                     chunk_count = 0
@@ -89,15 +94,20 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str):
                     with sr.AudioFile(wav_path) as source:
                         audio_data = recognizer.record(source)
                     text = recognizer.recognize_google(audio_data, language=src_locale)
+                    print("[STT] Recognized:", text)
                 except sr.UnknownValueError:
-                    await websocket.send_text("Could not understand audio.")
+                    msg = "Could not understand audio."
+                    print("[Error]", msg)
+                    await websocket.send_text(msg)
                     os.remove(webm_path)
                     os.remove(wav_path)
                     buffer.clear()
                     chunk_count = 0
                     continue
                 except sr.RequestError as e:
-                    await websocket.send_text(f"STT error: {e}")
+                    msg = f"STT error: {e}"
+                    print("[Error]", msg)
+                    await websocket.send_text(msg)
                     os.remove(webm_path)
                     os.remove(wav_path)
                     buffer.clear()
@@ -106,8 +116,11 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str):
 
                 try:
                     translated = translator.translate(text, src=src_code, dest=tgt_code).text
+                    print("[Translation] Translated:", translated)
                 except Exception as e:
-                    await websocket.send_text(f"Translation failed: {str(e)}")
+                    msg = f"Translation failed: {str(e)}"
+                    print("[Error]", msg)
+                    await websocket.send_text(msg)
                     os.remove(webm_path)
                     os.remove(wav_path)
                     buffer.clear()
@@ -115,13 +128,20 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str):
                     continue
 
                 try:
-                    tts = gTTS(text=translated, lang=tgt_tts_lang)
+                    try:
+                        tts = gTTS(text=translated, lang=tgt_tts_lang)
+                    except ValueError:
+                        print(f"[TTS] Falling back to Hindi")
+                        tts = gTTS(text=translated, lang="hi")
                     buf = io.BytesIO()
                     tts.write_to_fp(buf)
                     buf.seek(0)
+                    print("[TTS] Sending audio to client")
                     await websocket.send_bytes(buf.read())
                 except Exception as e:
-                    await websocket.send_text(f"TTS failed: {str(e)}")
+                    msg = f"TTS failed: {str(e)}"
+                    print("[Error]", msg)
+                    await websocket.send_text(msg)
 
                 os.remove(webm_path)
                 os.remove(wav_path)
@@ -129,7 +149,8 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str):
                 chunk_count = 0
 
     except WebSocketDisconnect:
-        print("Client disconnected")
+        print("[WebSocket] Client disconnected.")
+
 
     if __name__ == "__main__":
         port = int(os.environ.get("PORT", 8000))
