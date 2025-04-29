@@ -4,7 +4,7 @@ pydub==0.25.1
 speechrecognition==3.10.0
 gtts==2.3.1
 transformers==4.30.0
-torch==2.1.0+cpu  # Updated to use a more recent CPU version of PyTorch
+torch==2.1.0
 googletrans==4.0.0-rc1
 aiofiles==23.1.0
 numpy==1.23.5
