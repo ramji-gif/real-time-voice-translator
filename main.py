@@ -11,6 +11,7 @@ import tempfile
 
 app = FastAPI()
 translator = Translator()
+supported_langs = translator.LANGUAGES.keys()  # Supported languages for fallback check
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,7 +25,6 @@ app.add_middleware(
 def root():
     return {"message": "Voice Translator backend is running."}
 
-# Language map
 language_map = {
     "Hindi": ("hi-IN", "hi", "hi"),
     "English": ("en-IN", "en", "en"),
@@ -53,23 +53,7 @@ language_map = {
     "Sanskrit": ("sa-IN", "hi", "sa")
 }
 
-def is_translation_supported(code):
-    return code in translator.LANGUAGES
-
-def is_tts_supported(code):
-    from gtts.lang import tts_langs
-    return code in tts_langs()
-
 connected_devices = {}
-
-async def safe_send(websocket, data, device_id):
-    try:
-        await websocket.send_bytes(data)
-        return True
-    except Exception as e:
-        print(f"❌ Failed to send to {device_id}: {e}")
-        await websocket.close()
-        return False
 
 @app.websocket("/ws/{src}/{tgt}/{device_id}")
 async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str):
@@ -79,16 +63,6 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str)
 
     src_locale, src_tts_lang, src_code = language_map.get(src, ("hi-IN", "hi", "hi"))
     _, tgt_tts_lang, tgt_code = language_map.get(tgt, ("hi-IN", "hi", "hi"))
-
-    if not is_translation_supported(src_code):
-        print(f"⚠️ Translation source '{src_code}' not supported. Falling back to 'hi'")
-        src_code = "hi"
-    if not is_translation_supported(tgt_code):
-        print(f"⚠️ Translation target '{tgt_code}' not supported. Falling back to 'hi'")
-        tgt_code = "hi"
-    if not is_tts_supported(tgt_tts_lang):
-        print(f"⚠️ TTS for '{tgt_tts_lang}' not supported. Falling back to 'hi'")
-        tgt_tts_lang = "hi"
 
     connected_devices[device_id] = websocket
 
@@ -121,6 +95,20 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str)
                 os.remove(wav_path)
                 continue
 
+            # Fallback check before translation
+            fallback_used = False
+            if src_code not in supported_langs:
+                print(f"⚠️ Source language '{src_code}' not supported. Falling back to Hindi.")
+                src_code = "hi"
+                fallback_used = True
+            if tgt_code not in supported_langs:
+                print(f"⚠️ Target language '{tgt_code}' not supported. Falling back to Hindi.")
+                tgt_code = "hi"
+                tgt_tts_lang = "hi"
+                fallback_used = True
+            if fallback_used:
+                await websocket.send_text("⚠️ Fallback to Hindi due to unsupported language.")
+
             try:
                 translated = translator.translate(text, src=src_code, dest=tgt_code).text
                 print(f"🌐 Translated: {translated}")
@@ -133,12 +121,13 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str)
                 buf = io.BytesIO()
                 tts.write_to_fp(buf)
                 buf.seek(0)
-                print("🔊 Translated speech ready, broadcasting...")
+                print("🔊 Translated speech ready, sending to the other device")
 
-                for dev_id, dev_ws in list(connected_devices.items()):
-                    if dev_ws != websocket:
-                        if not await safe_send(dev_ws, buf.getvalue(), dev_id):
-                            connected_devices.pop(dev_id, None)
+                for other_device_id, device_websocket in connected_devices.items():
+                    if device_websocket != websocket:
+                        await device_websocket.send_bytes(buf.read())
+                        print(f"🔊 Sent translated audio to device: {other_device_id}")
+
             except Exception as e:
                 await websocket.send_text(f"TTS failed: {str(e)}")
 
@@ -146,9 +135,8 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str)
             os.remove(wav_path)
 
     except WebSocketDisconnect:
-        print(f"❌ WebSocket disconnected for device: {device_id}")
-        if device_id in connected_devices:
-            del connected_devices[device_id]
+        print(f"❌ WebSocket disconnected for device: {device_id}.")
+        del connected_devices[device_id]
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
