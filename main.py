@@ -3,7 +3,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import speech_recognition as sr
 from gtts import gTTS
-from googletrans import Translator
+from googletrans import Translator, LANGUAGES
 import io
 import os
 from pydub import AudioSegment
@@ -11,7 +11,7 @@ import tempfile
 
 app = FastAPI()
 translator = Translator()
-supported_langs = translator.LANGUAGES.keys()  # Supported languages for fallback check
+supported_langs = LANGUAGES.keys()  # Supported languages for fallback check
 
 app.add_middleware(
     CORSMiddleware,
