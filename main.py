@@ -3,7 +3,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import speech_recognition as sr
 from gtts import gTTS
-from googletrans import Translator, LANGUAGES
+from googletrans import Translator
 import io
 import os
 from pydub import AudioSegment
@@ -11,11 +11,10 @@ import tempfile
 
 app = FastAPI()
 translator = Translator()
-supported_langs = LANGUAGES.keys()  # Supported languages for fallback check
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allow all origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -25,6 +24,7 @@ app.add_middleware(
 def root():
     return {"message": "Voice Translator backend is running."}
 
+# Language map with TTS and speech-to-text languages
 language_map = {
     "Hindi": ("hi-IN", "hi", "hi"),
     "English": ("en-IN", "en", "en"),
@@ -53,6 +53,7 @@ language_map = {
     "Sanskrit": ("sa-IN", "hi", "sa")
 }
 
+# Store device WebSocket connections (mapped by device_id)
 connected_devices = {}
 
 @app.websocket("/ws/{src}/{tgt}/{device_id}")
@@ -61,20 +62,24 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str)
     await websocket.accept()
     recognizer = sr.Recognizer()
 
-    src_locale, src_tts_lang, src_code = language_map.get(src, ("hi-IN", "hi", "hi"))
-    _, tgt_tts_lang, tgt_code = language_map.get(tgt, ("hi-IN", "hi", "hi"))
+    src_locale, src_tts_lang, src_code = language_map.get(src, ("hi-IN", "hi-IN", "hi"))
+    _, tgt_tts_lang, tgt_code = language_map.get(tgt, ("hi-IN", "hi-IN", "hi"))
 
+    # Store the device connection
     connected_devices[device_id] = websocket
 
     try:
         while True:
+            # Wait for audio input from this device
             audio_chunk = await websocket.receive_bytes()
             print(f"📥 Received audio blob of size {len(audio_chunk)} bytes")
 
+            # Create a temporary file from the audio
             with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as webm_file:
                 webm_file.write(audio_chunk)
                 webm_path = webm_file.name
 
+            # Convert webm to wav for speech recognition
             wav_path = webm_path.replace(".webm", ".wav")
             try:
                 AudioSegment.from_file(webm_path).export(wav_path, format="wav")
@@ -84,6 +89,7 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str)
                 os.remove(webm_path)
                 continue
 
+            # Recognize speech from the audio file (speech-to-text)
             try:
                 with sr.AudioFile(wav_path) as source:
                     audio_data = recognizer.record(source)
@@ -95,20 +101,7 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str)
                 os.remove(wav_path)
                 continue
 
-            # Fallback check before translation
-            fallback_used = False
-            if src_code not in supported_langs:
-                print(f"⚠️ Source language '{src_code}' not supported. Falling back to Hindi.")
-                src_code = "hi"
-                fallback_used = True
-            if tgt_code not in supported_langs:
-                print(f"⚠️ Target language '{tgt_code}' not supported. Falling back to Hindi.")
-                tgt_code = "hi"
-                tgt_tts_lang = "hi"
-                fallback_used = True
-            if fallback_used:
-                await websocket.send_text("⚠️ Fallback to Hindi due to unsupported language.")
-
+            # Translate the recognized text
             try:
                 translated = translator.translate(text, src=src_code, dest=tgt_code).text
                 print(f"🌐 Translated: {translated}")
@@ -116,6 +109,7 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str)
                 await websocket.send_text(f"Translation failed: {str(e)}")
                 continue
 
+            # Generate TTS (Text-to-Speech) from the translated text
             try:
                 tts = gTTS(text=translated, lang=tgt_tts_lang)
                 buf = io.BytesIO()
@@ -123,19 +117,22 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str)
                 buf.seek(0)
                 print("🔊 Translated speech ready, sending to the other device")
 
-                for other_device_id, device_websocket in connected_devices.items():
+                # Send the translated audio to the opposite device
+                for device_id, device_websocket in connected_devices.items():
                     if device_websocket != websocket:
                         await device_websocket.send_bytes(buf.read())
-                        print(f"🔊 Sent translated audio to device: {other_device_id}")
+                        print(f"🔊 Sent translated audio to device: {device_id}")
 
             except Exception as e:
                 await websocket.send_text(f"TTS failed: {str(e)}")
 
+            # Cleanup
             os.remove(webm_path)
             os.remove(wav_path)
 
     except WebSocketDisconnect:
         print(f"❌ WebSocket disconnected for device: {device_id}.")
+        # Remove this device from the connected devices list
         del connected_devices[device_id]
 
 if __name__ == "__main__":
