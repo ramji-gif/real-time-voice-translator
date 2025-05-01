@@ -62,12 +62,21 @@ def is_tts_supported(code):
 
 connected_devices = {}
 
+async def safe_send(websocket, data, device_id):
+    try:
+        await websocket.send_bytes(data)
+        return True
+    except Exception as e:
+        print(f"❌ Failed to send to {device_id}: {e}")
+        await websocket.close()
+        return False
+
 @app.websocket("/ws/{src}/{tgt}/{device_id}")
 async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str):
     print(f"🔌 WebSocket connection opened for {device_id} - {src} → {tgt}")
     await websocket.accept()
-
     recognizer = sr.Recognizer()
+
     src_locale, src_tts_lang, src_code = language_map.get(src, ("hi-IN", "hi", "hi"))
     _, tgt_tts_lang, tgt_code = language_map.get(tgt, ("hi-IN", "hi", "hi"))
 
@@ -85,13 +94,8 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str)
 
     try:
         while True:
-            try:
-                audio_chunk = await websocket.receive_bytes()
-            except WebSocketDisconnect:
-                print(f"❌ WebSocket disconnected during receive: {device_id}")
-                break
-
-            print(f"📥 Received audio blob: {len(audio_chunk)} bytes")
+            audio_chunk = await websocket.receive_bytes()
+            print(f"📥 Received audio blob of size {len(audio_chunk)} bytes")
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as webm_file:
                 webm_file.write(audio_chunk)
@@ -102,7 +106,7 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str)
                 AudioSegment.from_file(webm_path).export(wav_path, format="wav")
                 print("✅ Converted webm to wav")
             except Exception as e:
-                await websocket.send_text(f"Audio conversion failed: {e}")
+                await websocket.send_text(f"Audio conversion failed: {str(e)}")
                 os.remove(webm_path)
                 continue
 
@@ -112,7 +116,7 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str)
                 text = recognizer.recognize_google(audio_data, language=src_locale)
                 print(f"🗣️ Recognized: {text}")
             except Exception as e:
-                await websocket.send_text(f"STT failed: {e}")
+                await websocket.send_text(f"STT failed: {str(e)}")
                 os.remove(webm_path)
                 os.remove(wav_path)
                 continue
@@ -121,9 +125,7 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str)
                 translated = translator.translate(text, src=src_code, dest=tgt_code).text
                 print(f"🌐 Translated: {translated}")
             except Exception as e:
-                await websocket.send_text(f"Translation failed: {e}")
-                os.remove(webm_path)
-                os.remove(wav_path)
+                await websocket.send_text(f"Translation failed: {str(e)}")
                 continue
 
             try:
@@ -131,29 +133,22 @@ async def translate_ws(websocket: WebSocket, src: str, tgt: str, device_id: str)
                 buf = io.BytesIO()
                 tts.write_to_fp(buf)
                 buf.seek(0)
-                print(f"🔊 Sending translated audio...")
+                print("🔊 Translated speech ready, broadcasting...")
 
-                for dev_id, dev_ws in connected_devices.items():
+                for dev_id, dev_ws in list(connected_devices.items()):
                     if dev_ws != websocket:
-                        try:
-                            await dev_ws.send_bytes(buf.getvalue())
-                            print(f"🔊 Sent to device: {dev_id}")
-                        except Exception as e:
-                            print(f"⚠️ Failed to send to {dev_id}: {e}")
-                # Also send text back to sender
-                await websocket.send_text(f"✔️ {translated}")
-
+                        if not await safe_send(dev_ws, buf.getvalue(), dev_id):
+                            connected_devices.pop(dev_id, None)
             except Exception as e:
-                await websocket.send_text(f"TTS failed: {e}")
+                await websocket.send_text(f"TTS failed: {str(e)}")
 
             os.remove(webm_path)
             os.remove(wav_path)
 
     except WebSocketDisconnect:
-        print(f"❌ WebSocket disconnected: {device_id}")
-    finally:
-        connected_devices.pop(device_id, None)
-        print(f"🧹 Cleaned up connection: {device_id}")
+        print(f"❌ WebSocket disconnected for device: {device_id}")
+        if device_id in connected_devices:
+            del connected_devices[device_id]
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
