@@ -1,5 +1,5 @@
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -68,7 +68,7 @@ async def translate_text(req: TranslationRequest):
         _, _, src_code = language_map.get(req.src, ("hi-IN", "hi", "hi"))
         _, _, tgt_code = language_map.get(req.tgt, ("hi-IN", "hi", "hi"))
         result = translator.translate(req.text, src=src_code, dest=tgt_code).text
-        return JSONResponse(content={"translated": result})
+        return JSONResponse(content={"translated_text": result})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -95,6 +95,7 @@ async def websocket_endpoint(websocket: WebSocket, src: str, tgt: str, device_id
 
             with sr.AudioFile(wav_path) as source:
                 audio_data = recognizer.record(source)
+            
             try:
                 text = recognizer.recognize_google(audio_data, language=src_locale)
                 translated = translator.translate(text, src=src_code, dest=tgt_code).text
@@ -103,9 +104,11 @@ async def websocket_endpoint(websocket: WebSocket, src: str, tgt: str, device_id
                 tts.write_to_fp(buf)
                 buf.seek(0)
 
+                # Send the translated audio to all connected clients
                 for d_id, ws in connected_devices.items():
                     if ws != websocket:
                         await ws.send_bytes(buf.read())
+
             except Exception as e:
                 await websocket.send_text(f"Error: {str(e)}")
 
@@ -118,5 +121,6 @@ async def websocket_endpoint(websocket: WebSocket, src: str, tgt: str, device_id
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
 
