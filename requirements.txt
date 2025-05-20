@@ -1,9 +1,9 @@
 fastapi
-uvicorn[standard]
-pydub
-gtts
-SpeechRecognition
-googletrans==4.0.0-rc1
-aiofiles
+uvicorn
+pydantic
 python-multipart
-numpy
+speechrecognition
+gtts
+googletrans==4.0.0rc1
+pydub
+aiofiles
