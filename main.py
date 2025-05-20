@@ -74,6 +74,7 @@ async def translate_text(req: TranslationRequest):
 
 @app.websocket("/ws/{src}/{tgt}/{device_id}")
 async def websocket_endpoint(websocket: WebSocket, src: str, tgt: str, device_id: str):
+    print(f"📡 WebSocket connection attempt: {src=} {tgt=} {device_id=}")
     await websocket.accept()
     connected_devices[device_id] = websocket
 
@@ -119,8 +120,7 @@ async def websocket_endpoint(websocket: WebSocket, src: str, tgt: str, device_id
         del connected_devices[device_id]
         print(f"Disconnected: {device_id}")
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
 
 
