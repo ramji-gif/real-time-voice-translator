@@ -1,20 +1,18 @@
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import speech_recognition as sr
 from gtts import gTTS
-from googletrans import Translator, LANGUAGES
-import io
-import os
-import json
+from googletrans import Translator
 from pydub import AudioSegment
 import tempfile
+import os
+import io
 
 app = FastAPI()
 translator = Translator()
-connected_devices = {}
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,6 +21,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+class TranslationRequest(BaseModel):
+    text: str
+    src: str
+    tgt: str
+
 
 language_map = {
     "Hindi": ("hi-IN", "hi", "hi"),
@@ -52,79 +56,67 @@ language_map = {
     "Sanskrit": ("sa-IN", "hi", "sa")
 }
 
+connected_devices = {}
+
 @app.get("/")
 def root():
-    return {"message": "✅ Voice Translator backend is running."}
+    return {"message": "Backend is working"}
 
 @app.post("/translate-only/")
-async def translate_only(req: BaseModel):
-    body = await req.json()
-    text = body["text"]
-    source_lang = body["source_lang"]
-    target_lang = body["target_lang"]
-    
-    _, _, src_code = language_map.get(source_lang, ("hi-IN", "hi", "hi"))
-    _, _, tgt_code = language_map.get(target_lang, ("hi-IN", "hi", "hi"))
-
+async def translate_text(req: TranslationRequest):
     try:
-        result = translator.translate(text, src=src_code, dest=tgt_code).text
-        return {"translated_text": result}
+        _, _, src_code = language_map.get(req.src, ("hi-IN", "hi", "hi"))
+        _, _, tgt_code = language_map.get(req.tgt, ("hi-IN", "hi", "hi"))
+        result = translator.translate(req.text, src=src_code, dest=tgt_code).text
+        return JSONResponse(content={"translated": result})
     except Exception as e:
-        return {"error": str(e)}
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.websocket("/ws/{src}/{tgt}/{device_id}")
 async def websocket_endpoint(websocket: WebSocket, src: str, tgt: str, device_id: str):
     await websocket.accept()
-    print(f"🔗 Connected: {device_id} ({src} → {tgt})")
+    connected_devices[device_id] = websocket
 
     src_locale, _, src_code = language_map.get(src, ("hi-IN", "hi", "hi"))
-    _, tgt_tts_lang, tgt_code = language_map.get(tgt, ("hi-IN", "hi", "hi"))
+    _, tgt_lang, tgt_code = language_map.get(tgt, ("hi-IN", "hi", "hi"))
 
     recognizer = sr.Recognizer()
-    connected_devices[device_id] = websocket
 
     try:
         while True:
-            data = await websocket.receive_bytes()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as webm_file:
-                webm_file.write(data)
-                webm_path = webm_file.name
+            audio_bytes = await websocket.receive_bytes()
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_audio:
+                temp_audio.write(audio_bytes)
+                webm_path = temp_audio.name
 
             wav_path = webm_path.replace(".webm", ".wav")
+            AudioSegment.from_file(webm_path).export(wav_path, format="wav")
 
+            with sr.AudioFile(wav_path) as source:
+                audio_data = recognizer.record(source)
             try:
-                AudioSegment.from_file(webm_path).export(wav_path, format="wav")
-                with sr.AudioFile(wav_path) as source:
-                    audio = recognizer.record(source)
-                text = recognizer.recognize_google(audio, language=src_locale)
-                print("🗣 Recognized:", text)
-            except Exception as e:
-                await websocket.send_text(f"STT failed: {str(e)}")
-                continue
-            finally:
-                os.remove(webm_path)
-                os.remove(wav_path)
-
-            try:
+                text = recognizer.recognize_google(audio_data, language=src_locale)
                 translated = translator.translate(text, src=src_code, dest=tgt_code).text
-                print("🌍 Translated:", translated)
-            except Exception as e:
-                await websocket.send_text(f"Translation failed: {str(e)}")
-                continue
-
-            try:
-                tts = gTTS(text=translated, lang=tgt_tts_lang)
+                tts = gTTS(text=translated, lang=tgt_lang)
                 buf = io.BytesIO()
                 tts.write_to_fp(buf)
                 buf.seek(0)
-                await websocket.send_bytes(buf.read())
+
+                for d_id, ws in connected_devices.items():
+                    if ws != websocket:
+                        await ws.send_bytes(buf.read())
             except Exception as e:
-                await websocket.send_text(f"TTS failed: {str(e)}")
+                await websocket.send_text(f"Error: {str(e)}")
+
+            os.remove(webm_path)
+            os.remove(wav_path)
 
     except WebSocketDisconnect:
-        print(f"❌ Disconnected: {device_id}")
-        connected_devices.pop(device_id, None)
+        del connected_devices[device_id]
+        print(f"Disconnected: {device_id}")
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
